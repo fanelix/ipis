@@ -5,6 +5,8 @@
 
 # OpenCode local state
 .opencode/
+.opencode-state/
+.opencode-diagnostics/
 
 # Node
 node_modules/
