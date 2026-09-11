@@ -2,13 +2,13 @@
   "name": "OpenCode Cloud",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
   "postCreateCommand": "npm install -g opencode-ai@latest pm2",
-  "postStartCommand": "pm2 delete opencode-web >/dev/null 2>&1 || true; pm2 start /workspaces/ipis/.devcontainer/start-opencode.sh --name opencode-web --interpreter bash; pm2 save >/dev/null 2>&1 || true",
+  "postStartCommand": "bash ${containerWorkspaceFolder}/.devcontainer/start-opencode.sh",
   "forwardPorts": [4097],
   "portsAttributes": {
     "4097": {
       "label": "OpenCode Web",
       "protocol": "http",
-      "onAutoForward": "openBrowser"
+      "onAutoForward": "notify"
     }
   }
 }

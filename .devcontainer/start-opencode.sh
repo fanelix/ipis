@@ -1,74 +1,89 @@
 #!/usr/bin/env bash
-set -u
+# Start the OpenCode server under pm2 and wait until it actually answers.
+#
+# Design notes:
+# - `opencode web` is required for the browser UI. Its attempt to launch a
+#   local browser is harmless in a headless container; OpenCode ignores that
+#   failure and keeps the web server running.
+# - pm2 supervises the opencode process directly instead of supervising this
+#   script, so `pm2 restart`/`pm2 delete` really control the server and cannot
+#   leave an orphan holding the port.
+# - Nothing here hardcodes a Codespace name or workspace path. Every Codespace
+#   gets a different forwarded hostname, so pinning one is always wrong.
+# - Server authentication is disabled on purpose; see the unset below.
+set -uo pipefail
 
-WORKSPACE="/workspaces/ipis"
-PERSIST="$WORKSPACE/.opencode-state"
-DATA_HOME="$HOME/.local/share"
-TARGET="$DATA_HOME/opencode"
-DIAG="$WORKSPACE/.opencode-diagnostics"
+PORT="${OPENCODE_PORT:-4097}"
+APP_NAME="opencode-web"
+LOG_DIR="/tmp/opencode"
+WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-mkdir -p "$PERSIST" "$DATA_HOME" "$DIAG"
-chmod 700 "$PERSIST" 2>/dev/null || true
+mkdir -p "$LOG_DIR"
 
-# Persist OpenCode sessions/state across Codespaces rebuilds by keeping the
-# real data under /workspaces and linking OpenCode's default data directory.
-if [ -L "$TARGET" ]; then
-  CURRENT_TARGET="$(readlink -f "$TARGET" 2>/dev/null || true)"
-  EXPECTED_TARGET="$(readlink -f "$PERSIST" 2>/dev/null || true)"
-  if [ "$CURRENT_TARGET" != "$EXPECTED_TARGET" ]; then
-    rm -f "$TARGET"
-    ln -s "$PERSIST" "$TARGET"
-  fi
-elif [ -d "$TARGET" ]; then
-  cp -a "$TARGET"/. "$PERSIST"/ 2>/dev/null || true
-  rm -rf "$TARGET"
-  ln -s "$PERSIST" "$TARGET"
-elif [ -e "$TARGET" ]; then
-  mv "$TARGET" "$TARGET.backup.$(date +%s)"
-  ln -s "$PERSIST" "$TARGET"
-else
-  ln -s "$PERSIST" "$TARGET"
+OPENCODE_BIN="$(command -v opencode || true)"
+if [ -z "$OPENCODE_BIN" ]; then
+  echo "ERROR: 'opencode' is not on PATH. Did postCreateCommand finish?" >&2
+  exit 1
 fi
 
-{
-  echo "timestamp=$(date -Is)"
-  echo "cwd=$(pwd)"
-  echo "opencode_path=$(command -v opencode || true)"
-  echo "opencode_version=$(opencode --version 2>&1 || true)"
-  echo "node_version=$(node --version 2>&1 || true)"
-  echo "npm_version=$(npm --version 2>&1 || true)"
-  echo "opencode_data_path=$TARGET"
-  echo "opencode_data_target=$(readlink -f "$TARGET" 2>/dev/null || true)"
-  echo "persistent_state=$PERSIST"
-  if [ -L "$TARGET" ] && [ "$(readlink -f "$TARGET" 2>/dev/null || true)" = "$(readlink -f "$PERSIST" 2>/dev/null || true)" ]; then
-    echo "persistent_state_link=OK"
-  else
-    echo "persistent_state_link=ERROR"
+# Keep OpenCode's data directory (sessions and provider credentials) on the
+# persistent /workspaces volume; $HOME is rebuilt with the container.
+PERSIST="$WORKSPACE_DIR/.opencode-state"
+DATA_DIR="$HOME/.local/share/opencode"
+mkdir -p "$PERSIST" "$(dirname "$DATA_DIR")"
+chmod 700 "$PERSIST" 2>/dev/null || true
+if [ ! -L "$DATA_DIR" ]; then
+  if [ -d "$DATA_DIR" ]; then
+    cp -a "$DATA_DIR"/. "$PERSIST"/ 2>/dev/null || true
+    mv "$DATA_DIR" "$DATA_DIR.bak.$(date +%s)"
   fi
-  echo "OPENCODE env vars:"
-  env | grep '^OPENCODE_' | sed 's/=.*$/=<set>/' || true
-} > "$DIAG/startup.txt" 2>&1
+  ln -sfn "$PERSIST" "$DATA_DIR"
+fi
 
-opencode web --hostname 0.0.0.0 --port 4097 >> "$DIAG/server.log" 2>&1 &
-PID=$!
+# Server authentication is deliberately disabled. OpenCode takes its password
+# only from OPENCODE_SERVER_PASSWORD and offers no CLI flag for it, so clearing
+# the variable here keeps the server passwordless even when a Codespaces secret
+# of that name is injected into the container. With a password set, every
+# request answers 401, including the health check below.
+unset OPENCODE_SERVER_PASSWORD
 
-for i in $(seq 1 20); do
+echo "NOTE: OpenCode server authentication is disabled."
+echo "      Access is gated only by Codespaces port visibility."
+echo "      Keep port ${PORT} set to Private in the Ports panel."
+
+# Clear the previous pm2 entry and any orphaned server still holding the port.
+# A second instance on a busy port exits immediately with a ServeError, which
+# under pm2 turns into a restart loop and no working forwarded port.
+pm2 delete "$APP_NAME" >/dev/null 2>&1 || true
+pkill -f "opencode web .*--port ${PORT}" >/dev/null 2>&1 || true
+sleep 1
+
+pm2 start "$OPENCODE_BIN" \
+  --name "$APP_NAME" \
+  --output "$LOG_DIR/out.log" \
+  --error "$LOG_DIR/err.log" \
+  -- web --hostname 0.0.0.0 --port "$PORT"
+
+pm2 save >/dev/null 2>&1 || true
+
+# Real readiness check. `curl -f` fails on non-2xx; the previous version used
+# plain `curl -sS`, which reports success even on a 404 and so proved nothing.
+# Authenticate the check when server protection is enabled; otherwise a
+# healthy protected server returns 401 and would be mistaken for a failure.
+CURL_AUTH=()
+if [ -n "${OPENCODE_SERVER_PASSWORD:-}" ]; then
+  CURL_AUTH=(-u "${OPENCODE_SERVER_USERNAME:-opencode}:${OPENCODE_SERVER_PASSWORD}")
+fi
+
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 2 "${CURL_AUTH[@]}" "http://127.0.0.1:${PORT}/global/health" >/dev/null 2>&1; then
+    echo "OpenCode is listening on port ${PORT}."
+    echo "Open it from the Ports panel; the forwarded URL only exists while this Codespace is running."
+    exit 0
+  fi
   sleep 1
-  if curl -sS -D "$DIAG/health.headers" http://127.0.0.1:4097/global/health -o "$DIAG/health.body"; then
-    break
-  fi
 done
 
-curl -sS -D "$DIAG/root.headers" http://127.0.0.1:4097/ -o "$DIAG/root.body" || true
-curl -sS -D "$DIAG/doc.headers" http://127.0.0.1:4097/doc -o "$DIAG/doc.body" || true
-
-FORWARDED_HOST="congenial-space-garbanzo-q7jw4595qj742xxq7-4097.app.github.dev"
-curl -sS \
-  -H "Host: $FORWARDED_HOST" \
-  -H "X-Forwarded-Host: $FORWARDED_HOST" \
-  -H "X-Forwarded-Proto: https" \
-  -D "$DIAG/proxy-host.headers" \
-  http://127.0.0.1:4097/ \
-  -o "$DIAG/proxy-host.body" || true
-
-wait "$PID"
+echo "ERROR: OpenCode did not become ready on port ${PORT}." >&2
+pm2 logs "$APP_NAME" --lines 40 --nostream 2>/dev/null || true
+exit 1
