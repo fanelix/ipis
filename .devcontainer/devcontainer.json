@@ -1,8 +1,8 @@
 {
   "name": "OpenCode Cloud",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
-  "postCreateCommand": "npm install -g opencode-ai@latest",
-  "postStartCommand": "bash -lc 'npm install -g opencode-ai@latest > /tmp/opencode-install.log 2>&1 && nohup opencode web --hostname 0.0.0.0 --port 4096 > /tmp/opencode-web.log 2>&1 &'",
+  "postCreateCommand": "npm install -g opencode-ai@latest pm2",
+  "postStartCommand": "pm2 delete opencode-web >/dev/null 2>&1 || true; pm2 start /workspaces/ipis/.devcontainer/start-opencode.sh --name opencode-web --interpreter bash; pm2 save >/dev/null 2>&1 || true",
   "forwardPorts": [4096],
   "portsAttributes": {
     "4096": {
