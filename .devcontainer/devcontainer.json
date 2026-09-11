@@ -1,0 +1,14 @@
+{
+  "name": "OpenCode Cloud",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "postCreateCommand": "npm install -g opencode-ai@latest",
+  "postStartCommand": "nohup opencode web --hostname 0.0.0.0 --port 4096 > /tmp/opencode-web.log 2>&1 &",
+  "forwardPorts": [4096],
+  "portsAttributes": {
+    "4096": {
+      "label": "OpenCode Web",
+      "protocol": "http",
+      "onAutoForward": "openBrowser"
+    }
+  }
+}
