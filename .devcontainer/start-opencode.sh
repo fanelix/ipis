@@ -26,4 +26,13 @@ done
 curl -sS -D "$DIAG/root.headers" http://127.0.0.1:4097/ -o "$DIAG/root.body" || true
 curl -sS -D "$DIAG/doc.headers" http://127.0.0.1:4097/doc -o "$DIAG/doc.body" || true
 
+FORWARDED_HOST="congenial-space-garbanzo-q7jw4595qj742xxq7-4097.app.github.dev"
+curl -sS \
+  -H "Host: $FORWARDED_HOST" \
+  -H "X-Forwarded-Host: $FORWARDED_HOST" \
+  -H "X-Forwarded-Proto: https" \
+  -D "$DIAG/proxy-host.headers" \
+  http://127.0.0.1:4097/ \
+  -o "$DIAG/proxy-host.body" || true
+
 wait "$PID"
