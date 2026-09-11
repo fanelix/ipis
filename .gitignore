@@ -1,0 +1,14 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# OpenCode local state
+.opencode/
+
+# Node
+node_modules/
+
+# OS/editor
+.DS_Store
+.vscode/
